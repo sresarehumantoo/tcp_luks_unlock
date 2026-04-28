@@ -1,42 +1,110 @@
-# TCP LUKS Decryptor
-A TCP Server / Client model written in C, built to provide an automatic unlock to LUKS encrypted drives through the use of initramfs via Dropbear SSH.
+# luks-unlock
 
-Requirements to Build:
-- libsodium-dev
-- make
-- gcc
+A small TCP server/client for delivering LUKS unlock passphrases at boot,
+written in C with libsodium. Conceptually similar to Mandos and Tang/Clevis:
+the server holds passphrases for authorized clients; clients fetch their own
+passphrase during initramfs and pipe it into cryptsetup. No SSH in the
+runtime path.
 
-Compiling:
-- make
+## How it works
 
-Client Requirements:
-- dropbear-initramfs
+- Each side has a long-term **Ed25519** identity keypair.
+- The client pins the server's pubkey; the server keeps a directory of
+  authorized clients — one file per client, named by the client's pubkey hex,
+  whose contents are that client's LUKS passphrase.
+- On connect, both sides exchange ephemeral **X25519** keys and sign the
+  transcript with their long-term Ed25519 key, giving mutual authentication
+  with forward secrecy.
+- The session is sealed with libsodium's
+  `crypto_secretstream_xchacha20poly1305`.
+- After the handshake the server pushes the client's passphrase and closes.
+  The client writes it to the configured output (default
+  `/lib/cryptsetup/passfifo`) and exits.
 
-Dropbear SSH prereq:
-- Have your authorized keys appended to /etc/dropbear/initramfs/authorized_keys
+## Build
 
-Generating a key with encryptor:
-- on the client system run: ./encryptor ./ YOURPASSWORDHERE
+Requires `libsodium-dev`, `gcc` (or `clang`), `make`, and POSIX threads.
 
-Unpacking / Packing initramfs set the following in initramfs_packing_tool.sh before running:
+```sh
+sudo apt install libsodium-dev
+make
+```
 
-- initramfs_location=/boot : The location of your initramfs image
-- initramfs_name=initrd.img-6.1.0-10-amd64 : The image name
-- zst_output_arch_name=root_fs_archive : The name of the output archive
-- block_size=13976 : The blocksize
-- tmp_file_sys_name=tmp_rootfs : The tmp file system name
-- root_file_sys_name=rootfs : The root file system name
+Binaries land in `build/`:
 
-To have the client load on startup:
-- install the compiled client to tmp_rootfs/bin
-- create the data directory and install the key file given by encryptor
-- copy "tcprun" to scripts/local-top/
-- Now repack the image using the pack function of initramfs_packing_tool.sh
+- `build/luks-unlock-server`
+- `build/luks-unlock-client`
+- `build/luks-unlock-keygen`
+- `build/luks-unlock-enroll`
 
-tcp_client
+## Setup
 
-On the Server:
-- ./tcp_server
+### 1. Generate the server identity (once, on the server)
 
-Now when the client boots it will send a beacon to the server which will reply, then receive the encrypted key to unlock the client
-which the server will then decrypt and use SSH to connect to the client and unlock it.
+```sh
+sudo install -d -m 0700 /etc/luks-unlock
+sudo ./build/luks-unlock-keygen /etc/luks-unlock/server.key
+# prints SERVER_PUBKEY_HEX on stdout — keep this
+```
+
+### 2. Generate a client identity (on each client)
+
+```sh
+sudo install -d -m 0700 /etc/luks-unlock
+sudo ./build/luks-unlock-keygen /etc/luks-unlock/client.key
+# prints CLIENT_PUBKEY_HEX on stdout — keep this
+```
+
+### 3. Enroll each client on the server
+
+```sh
+sudo install -d -m 0700 /var/lib/luks-unlock/keys
+printf '%s' 'YOUR_LUKS_PASSPHRASE' | \
+  sudo ./build/luks-unlock-enroll /var/lib/luks-unlock/keys CLIENT_PUBKEY_HEX
+```
+
+### 4. Configure
+
+Copy `etc/server.conf.example` → `/etc/luks-unlock/server.conf` on the server.
+Copy `etc/client.conf.example` → `/etc/luks-unlock/client.conf` on each client
+and fill in `server_host`, `server_port`, and `server_pubkey` (hex from step 1).
+
+### 5. Run the server
+
+```sh
+sudo ./build/luks-unlock-server -c /etc/luks-unlock/server.conf
+```
+
+### 6. Wire the client into your initramfs
+
+Simplest pattern: an init hook runs the client and pipes its output to
+`cryptsetup luksOpen`. See `scripts/cryptroot-tcp-unlock.sh`.
+
+`tools/initramfs_pack.sh` is the legacy unpack/repack helper for editing the
+initramfs image directly — edit the variables at the top before running.
+
+## Project layout
+
+```
+src/server/        luks-unlock-server (handles connections, looks up keystore)
+src/client/        luks-unlock-client (fetches key, writes to output)
+src/common/        shared protocol/net/config/log code
+include/           public headers for the modules above
+third_party/inih/  vendored INI parser (BSD-3, by Ben Hoyt)
+tools/             keygen/enroll CLIs and the initramfs packing script
+etc/               example configs
+scripts/           example initramfs hook
+```
+
+## Security notes
+
+- The keystore directory should be `0700`, files `0600`, owned by the user
+  running the server. Plaintext passphrases live there at rest by design —
+  protect with filesystem perms (or layer dm-crypt under it).
+- Forward secrecy: ephemeral X25519 keys are discarded after each session.
+  Compromise of a long-term identity does not let an attacker decrypt past
+  sessions captured on the wire.
+- Mutual authentication: both halves of the handshake are signed and bind to
+  each other. A client whose pubkey is not in the keystore directory is
+  rejected before any passphrase is touched. A server that does not match the
+  client's pinned `server_pubkey` is rejected before any key material is sent.

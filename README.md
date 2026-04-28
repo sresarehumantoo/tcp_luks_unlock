@@ -80,8 +80,17 @@ sudo ./build/luks-unlock-server -c /etc/luks-unlock/server.conf
 Simplest pattern: an init hook runs the client and pipes its output to
 `cryptsetup luksOpen`. See `scripts/cryptroot-tcp-unlock.sh`.
 
-`tools/initramfs_pack.sh` is the legacy unpack/repack helper for editing the
-initramfs image directly — edit the variables at the top before running.
+`tools/initramfs_pack.sh` unpacks and repacks an initramfs image when you
+need to splice in a binary or hook by hand. It auto-detects the early-cpio
+section, padding, and main-archive compression (zstd / gzip / xz / lz4 /
+bzip2):
+
+```sh
+tools/initramfs_pack.sh info   /boot/initrd.img-$(uname -r)
+tools/initramfs_pack.sh unpack /boot/initrd.img-$(uname -r) work/
+# ...edit files under work/main/ ...
+tools/initramfs_pack.sh pack   work/ /tmp/initrd.img.new
+```
 
 ## Project layout
 

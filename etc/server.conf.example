@@ -1,0 +1,11 @@
+# luks-unlock server configuration.
+
+[server]
+listen = 0.0.0.0
+port = 8080
+
+identity_key = /etc/luks-unlock/server.key
+keystore     = /var/lib/luks-unlock/keys
+
+# debug | info | warn | error
+log_level = info

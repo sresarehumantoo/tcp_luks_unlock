@@ -1,0 +1,20 @@
+# luks-unlock client configuration.
+
+[client]
+server_host = 192.168.1.10
+server_port = 8080
+
+# Pinned server pubkey, hex-encoded. Run `luks-unlock-keygen` on the server
+# and paste the printed hex string here.
+server_pubkey = 0000000000000000000000000000000000000000000000000000000000000000
+
+identity_key = /etc/luks-unlock/client.key
+
+# Where to write the received passphrase. Use "-" to write to stdout (handy
+# for piping straight into `cryptsetup luksOpen --key-file=-`).
+output = /lib/cryptsetup/passfifo
+
+# Seconds to wait between connect attempts when the server is unreachable.
+retry_seconds = 5
+
+log_level = info
